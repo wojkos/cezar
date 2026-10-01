@@ -213,6 +213,28 @@ function waitFor<T>(promise: Promise<T>, label: string, limit = timeoutMs): Prom
   ]);
 }
 
+function waitForSessionIdle(
+  stream: ReturnType<typeof openEvents>,
+  sessionId: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      const types = stream.frames.map((frame) => frame.type).filter((type): type is string => typeof type === 'string');
+      reject(new Error(`session.idle event timed out after ${timeoutMs}ms; received types=${types.join(', ')} frames=${JSON.stringify(stream.frames.slice(-10))}`));
+    }, timeoutMs);
+    deadline.unref();
+    const check = (): void => {
+      if (stream.frames.some((frame) => frame.type === 'session.idle' && (frame.data as JsonObject | undefined)?.sessionID === sessionId)) {
+        clearTimeout(deadline);
+        resolve();
+        return;
+      }
+      setTimeout(check, 100).unref();
+    };
+    check();
+  });
+}
+
 async function runOpenCodeVersion(): Promise<string> {
   const result = await execFile(binary, ['--version'], { timeout: 30_000, maxBuffer: 1_000_000 });
   return `${result.stdout}\n${result.stderr}`.trim();
@@ -269,19 +291,7 @@ test(
       assert.ok(prompt.status >= 200 && prompt.status < 300, `POST /prompt failed: HTTP ${prompt.status} ${prompt.body}`);
       parseOptionalJson(prompt, 'POST /prompt');
 
-      await waitFor(
-        new Promise<void>((resolve) => {
-          const check = (): void => {
-            if (events?.frames.some((frame) => frame.type === 'session.idle' && (frame.data as JsonObject | undefined)?.sessionID === sessionId)) {
-              resolve();
-              return;
-            }
-            setTimeout(check, 50).unref();
-          };
-          check();
-        }),
-        'session.idle event',
-      );
+      await waitForSessionIdle(events, sessionId as string);
 
       const frameTypes = events.frames.map((frame) => frame.type).filter((type): type is string => typeof type === 'string');
       assert.ok(frameTypes.includes('server.connected'), `missing server.connected; received ${frameTypes.join(', ')}`);
