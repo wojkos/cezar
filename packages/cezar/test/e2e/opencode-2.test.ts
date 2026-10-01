@@ -101,14 +101,21 @@ function childOutput(child: ChildProcessWithoutNullStreams): { stdout: string; s
   return { stdout, stderr };
 }
 
-async function waitForServer(child: ChildProcessWithoutNullStreams, output: { stdout: string; stderr: string }): Promise<string> {
+async function waitForServer(
+  child: ChildProcessWithoutNullStreams,
+  output: { stdout: string; stderr: string },
+  baseUrl: string,
+  password: string,
+): Promise<string> {
   const deadline = Date.now() + 30_000;
   return new Promise((resolve, reject) => {
-    const check = (): void => {
-      const match = output.stdout.match(/https?:\/\/127\.0\.0\.1:\d+/);
-      if (match) {
-        resolve(match[0]);
+    const check = async (): Promise<void> => {
+      try {
+        await requestJson(`${baseUrl}/api/session`, password, 'GET');
+        resolve(baseUrl);
         return;
+      } catch {
+        // The server is still starting or has not bound the port yet.
       }
       if (child.exitCode !== null) {
         reject(new Error(`OpenCode exited with ${child.exitCode}. stdout=${output.stdout} stderr=${output.stderr}`));
@@ -118,9 +125,9 @@ async function waitForServer(child: ChildProcessWithoutNullStreams, output: { st
         reject(new Error(`Timed out waiting for OpenCode server. stdout=${output.stdout} stderr=${output.stderr}`));
         return;
       }
-      setTimeout(check, 50).unref();
+      setTimeout(() => void check(), 100).unref();
     };
-    check();
+    void check();
   });
 }
 
@@ -230,7 +237,7 @@ test(
     let events: ReturnType<typeof openEvents> | undefined;
 
     try {
-      const baseUrl = await waitForServer(child, output);
+      const baseUrl = await waitForServer(child, output, `http://127.0.0.1:${port}`, password);
       const probe = await requestJson(`${baseUrl}/api/session`, password, 'GET');
       assert.ok(probe.status >= 200 && probe.status < 300, `GET /api/session failed: HTTP ${probe.status} ${probe.body}`);
       const probeBody = parseJson(probe, 'GET /api/session');
