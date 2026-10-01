@@ -351,3 +351,37 @@ describe('#897 a turn that outlives its prompt POST', () => {
     expect(Date.now() - started).toBeLessThan(TURN_IDLE_GRACE_MS);
   }, 30_000);
 });
+
+/**
+ * A detection probe is a hint, not a guarantee: it can misread a real v2
+ * server's SPA catch-all as v1. `createSession` must self-heal on the 405
+ * that misdetection produces instead of failing the whole run (follow-up to
+ * the dialect-detection fix: content-type-only classification plus a bounded
+ * retry closed the common races, but nothing rules out a 200-text/html probe
+ * succeeding outright).
+ */
+describe('createSession self-heals a v1 misdetection', () => {
+  const mockBin = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '__fixtures__',
+    'opencode',
+    'mock-opencode-serve-v1-misdetect.mjs',
+  );
+
+  it('a 405 on the v1 session path retries under v2 instead of failing the run', async () => {
+    const runner = new OpencodeServerRunner({ bin: mockBin, timeoutMs: 60_000 });
+    const events: AgentEvent[] = [];
+    const session = runner.startSession(
+      { userPrompt: 'say hi', cwd: process.cwd() },
+      (e) => events.push(e),
+      { autoEndAfterFirstTurn: true },
+    );
+    const result = await session.result;
+
+    expect(events.filter((e) => e.type === 'error')).toEqual([]);
+    expect(events.some((e) => e.type === 'session')).toBe(true);
+    expect(events.filter((e) => e.type === 'turn-end')).toHaveLength(1);
+    expect(result.sessionId).toBe('ses_v1misdetect_1');
+  }, 30_000);
+});
+

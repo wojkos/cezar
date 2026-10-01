@@ -383,13 +383,29 @@ class OpencodeSession implements AgentSession {
     });
   }
 
+  /**
+   * `detectOpencodeDialect` is a probe, not a guarantee — it runs once,
+   * against a server still warming up, and nothing requires it to agree with
+   * what the session POST itself gets. A v1 guess that then 405s is
+   * unambiguous proof the server is v2 (v1 never answers that route with
+   * 405), so this retries once under v2 instead of failing the whole run on a
+   * detection race the probe could not fully rule out.
+   */
+  private async createSession(model: ReturnType<typeof parseModelIdentity>): Promise<Record<string, unknown>> {
+    try {
+      return await this.http('POST', this.dialect.sessionPath(this.spec.cwd), this.dialect.sessionBody(model));
+    } catch (err) {
+      if (this.dialect.version === 'v1' && err instanceof OpencodeStatusError && err.status === 405) {
+        this.dialect = opencodeDialect('v2');
+        return this.http('POST', this.dialect.sessionPath(this.spec.cwd), this.dialect.sessionBody(model));
+      }
+      throw err;
+    }
+  }
+
   private async bootstrap(): Promise<void> {
     const model = parseModelIdentity(this.spec.model);
-    const created = await this.http(
-      'POST',
-      this.dialect.sessionPath(this.spec.cwd),
-      this.dialect.sessionBody(model),
-    );
+    const created = await this.createSession(model);
     this.sessionId = stringField(created, 'id');
     if (!this.sessionId) throw new Error('opencode did not return a session id');
     this.emit({ type: 'session', sessionId: this.sessionId });
@@ -659,9 +675,9 @@ class OpencodeSession implements AgentSession {
    * global `fetch` so no undici `headersTimeout`/`bodyTimeout` default cuts the
    * prompt long-poll at 300 s (#897) — see that module's header for why.
    *
-   * Rejects with `OpencodeTransportError` when the connection failed and a
-   * plain `Error` when the server answered with a status; only the caller can
-   * tell whether the first of those means anything.
+   * Rejects with `OpencodeTransportError` when the connection failed and
+   * `OpencodeStatusError` when the server answered with a status; only the
+   * caller can tell whether the first of those means anything.
    */
   private async http(
     method: string,
@@ -675,7 +691,7 @@ class OpencodeSession implements AgentSession {
       authorization: this.authorizationHeader(),
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`${method} ${path} → ${res.status}`);
+      throw new OpencodeStatusError(method, path, res.status);
     }
     if (!res.body) return {};
     try {
@@ -705,6 +721,16 @@ class OpencodeSession implements AgentSession {
 }
 
 // ---- helpers --------------------------------------------------------------
+
+/** An HTTP status is an ANSWER from the server, not a lost connection (see
+ *  `OpencodeTransportError`) \u2014 carries the status so `createSession` can tell a
+ *  v1-vs-v2 mismatch (405) from a real failure without parsing the message. */
+class OpencodeStatusError extends Error {
+  constructor(method: string, path: string, readonly status: number) {
+    super(`${method} ${path} \u2192 ${status}`);
+    this.name = 'OpencodeStatusError';
+  }
+}
 
 interface OpencodeEvent {
   type?: string;
