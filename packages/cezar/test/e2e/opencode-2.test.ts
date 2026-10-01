@@ -220,7 +220,8 @@ test(
 
     const root = await mkdtemp(join(tmpdir(), 'cezar-opencode-v2-'));
     const password = `cez-${Buffer.from(`${Date.now()}-${Math.random()}`).toString('base64url')}`;
-    const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], {
+    const port = 40000 + Math.floor(Math.random() * 20000);
+    const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
       cwd: root,
       env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
       stdio: ['ignore', 'pipe', 'pipe'],
