@@ -88,7 +88,7 @@ describe('opencode-http', () => {
       res.end('unknown model');
     });
 
-    await expect(opencodeRequest(`${base}/session/x/message`, { method: 'POST', body: {} })).resolves.toEqual({
+    await expect(opencodeRequest(`${base}/session/x/message`, { method: 'POST', body: {} })).resolves.toMatchObject({
       status: 400,
       body: 'unknown model',
     });

@@ -54,18 +54,42 @@ export function opencodeDialect(version: OpencodeDialectVersion): OpencodeDialec
   return version === 'v2' ? v2 : v1;
 }
 
-/** Detect the dialect before opening SSE: v2's SPA catch-all returns HTML 200. */
+/** A startup race: the "server listening" line can print a handful of ms
+ *  before the listener actually accepts connections (observed directly
+ *  against a real v2.0.20 build). A single failed probe must not condemn a
+ *  genuine v2 server to a permanent, wrong v1 fallback. */
+const DETECT_RETRIES = 5;
+const DETECT_RETRY_DELAY_MS = 100;
+
+/**
+ * Detect the dialect before opening SSE.
+ *
+ * The test is content-type alone, never the status. v2's `/api/session`
+ * answers JSON for every outcome, including an auth failure
+ * (`401 application/json`) — and a wrong/late password must surface as a
+ * clear v2 auth error later, not a silent, confusing fall-back to v1's
+ * `POST /session → 405`. v1 has no `/api/session` route at all; v2's SPA
+ * catch-all answers unmatched paths with `200 text/html`, which is the only
+ * case that still reads as v1.
+ */
 export async function detectOpencodeDialect(baseUrl: string, authorization: string): Promise<OpencodeDialect> {
-  let response: OpencodeResponse;
-  try {
-    response = await opencodeRequest(`${baseUrl}/api/session`, { method: 'GET', authorization });
-  } catch {
-    return v1;
+  let response: OpencodeResponse | undefined;
+  for (let attempt = 0; attempt < DETECT_RETRIES; attempt++) {
+    try {
+      response = await opencodeRequest(`${baseUrl}/api/session`, { method: 'GET', authorization });
+      break;
+    } catch {
+      if (attempt === DETECT_RETRIES - 1) return v1;
+      await delay(DETECT_RETRY_DELAY_MS);
+    }
   }
+  if (!response) return v1;
   const contentType = response.headers['content-type'] ?? '';
-  return response.status >= 200 && response.status < 300 && /application\/json/i.test(contentType)
-    ? v2
-    : v1;
+  return /application\/json/i.test(contentType) ? v2 : v1;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

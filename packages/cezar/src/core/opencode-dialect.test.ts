@@ -72,6 +72,31 @@ describe('opencode dialects', () => {
     expect(seenAuth).toBe(AUTH);
   });
 
+  it('detects v2 from a JSON 401 — an auth failure is still unambiguously v2, never a silent v1 fallback', async () => {
+    const base = await serve((_request, response) => {
+      response.writeHead(401, { 'content-type': 'application/json' });
+      response.end('{"_tag":"UnauthorizedError","message":"Authentication required"}');
+    });
+
+    await expect(detectOpencodeDialect(base, AUTH)).resolves.toMatchObject({ version: 'v2' });
+  });
+
+  it('retries past a startup race instead of condemning a live v2 server to v1', async () => {
+    let attempts = 0;
+    const base = await serve((_request, response) => {
+      attempts++;
+      if (attempts < 3) {
+        response.destroy();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"data":[]}');
+    });
+
+    await expect(detectOpencodeDialect(base, AUTH)).resolves.toMatchObject({ version: 'v2' });
+    expect(attempts).toBeGreaterThanOrEqual(3);
+  });
+
   it('falls back to v1 for an SPA HTML catch-all', async () => {
     const base = await serve((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html' });
