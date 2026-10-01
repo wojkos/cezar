@@ -300,7 +300,19 @@ test(
       assert.ok(prompt.status >= 200 && prompt.status < 300, `POST /prompt failed: HTTP ${prompt.status} ${prompt.body}`);
       parseOptionalJson(prompt, 'POST /prompt');
 
-      await waitForSessionIdle(events, sessionId as string);
+      try {
+        await waitForSessionIdle(events, sessionId as string);
+      } catch (error) {
+        const catalog = await requestJson(`${baseUrl}/api/model`, password, 'GET').catch(() => undefined);
+        const models = catalog ? (JSON.parse(catalog.body) as { data?: JsonObject[] }).data ?? [] : [];
+        const candidates = models
+          .filter((model) => model.providerID === provider && model.status === 'active')
+          .map((model) => `${provider}/${String(model.id)}`);
+        throw new Error(
+          `${(error as Error).message}\nsession model=${JSON.stringify(session.model)}\n` +
+            `The provider rejected ${testModel} (listed in /api/model does not mean your account can use it). Try another CEZ_OPENCODE_TEST_MODEL: ${candidates.join(', ') || '(none listed)'}`,
+        );
+      }
 
       const frameTypes = events.frames.map((frame) => frame.type).filter((type): type is string => typeof type === 'string');
       assert.ok(frameTypes.includes('server.connected'), `missing server.connected; received ${frameTypes.join(', ')}`);
