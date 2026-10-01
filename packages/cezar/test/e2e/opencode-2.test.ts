@@ -224,6 +224,12 @@ function waitForSessionIdle(
     }, timeoutMs);
     deadline.unref();
     const check = (): void => {
+      const failed = stream.frames.find((frame) => frame.type === 'session.execution.failed' || frame.type === 'session.step.failed');
+      if (failed) {
+        clearTimeout(deadline);
+        reject(new Error(`OpenCode execution failed: ${JSON.stringify(failed.data ?? failed)}`));
+        return;
+      }
       if (stream.frames.some((frame) => frame.type === 'session.idle' && (frame.data as JsonObject | undefined)?.sessionID === sessionId)) {
         clearTimeout(deadline);
         resolve();
