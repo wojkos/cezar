@@ -119,7 +119,7 @@ class OpencodeSession implements AgentSession {
   private resolveExit!: () => void;
   private exited!: Promise<void>;
   private readonly sse = new AbortController();
-  private readonly authorization: string;
+  private readonly password = randomBytes(18).toString('base64url');
   private dialect: OpencodeDialect = opencodeDialect('v1');
   private readonly toolCalls: AgentToolCallRecord[] = [];
   private readonly textChunks: string[] = [];
@@ -168,6 +168,10 @@ class OpencodeSession implements AgentSession {
   /** One teardown per session — see `terminate()`. */
   private signalled = false;
 
+  private authorizationHeader(): string {
+    return `Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}`;
+  }
+
   constructor(
     private readonly bin: string,
     timeoutMs: number,
@@ -175,12 +179,11 @@ class OpencodeSession implements AgentSession {
     private readonly onEvent: ((event: AgentEvent) => void) | undefined,
     private readonly opts: SessionOptions,
   ) {
-    const password = randomBytes(18).toString('base64url');
-    this.authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+    const authorization = this.authorizationHeader();
     // Random high port; the actual bound URL is read back from stdout.
     const port = 40000 + Math.floor(Math.random() * 20000);
     try {
-      const env = buildChildEnv({ backend: 'opencode', extraEnv: { ...spec.env, OPENCODE_SERVER_PASSWORD: password } });
+      const env = buildChildEnv({ backend: 'opencode', extraEnv: { ...spec.env, OPENCODE_SERVER_PASSWORD: this.password } });
       const [file, argv] = disclaimedCommand(bin, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], env);
       this.child = nodeSpawn(file, argv, { cwd: spec.cwd, env });
     } catch (err) {
@@ -225,7 +228,7 @@ class OpencodeSession implements AgentSession {
 
     this.ready = (async () => {
       this.baseUrl = await urlReady;
-      this.dialect = await detectOpencodeDialect(this.baseUrl, this.authorization);
+      this.dialect = await detectOpencodeDialect(this.baseUrl, authorization);
       await this.bootstrap();
     })();
 
@@ -537,7 +540,7 @@ class OpencodeSession implements AgentSession {
   private async consumeEvents(): Promise<void> {
     if (!this.baseUrl) return;
     this.sseConnected = await openOpencodeEventStream(`${this.baseUrl}${this.dialect.eventPath()}`, {
-      authorization: this.authorization,
+      authorization: this.authorizationHeader(),
       signal: this.sse.signal,
       onFrame: (frame) => this.handleFrame(frame),
       // The bus is the turn's evidence of life; once it is gone a turn waiting
@@ -671,7 +674,7 @@ class OpencodeSession implements AgentSession {
     const res = await opencodeRequest(`${this.baseUrl}${path}`, {
       method,
       body,
-      authorization: this.authorization,
+      authorization: this.authorizationHeader(),
     });
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`${method} ${path} → ${res.status}`);
