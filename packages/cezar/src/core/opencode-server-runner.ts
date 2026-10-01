@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import type {
   AgentEvent,
   AgentRunResult,
@@ -19,6 +20,11 @@ import {
   openOpencodeEventStream,
   opencodeRequest,
 } from './opencode-http.ts';
+import {
+  detectOpencodeDialect,
+  opencodeDialect,
+  type OpencodeDialect,
+} from './opencode-dialect.ts';
 import {
   createOpencodeUiState,
   mapOpencodeEvent,
@@ -58,12 +64,12 @@ export const TURN_IDLE_GRACE_MS = 5_000;
  * the opencode TUI talks to) with an SSE event stream. One server per session,
  * bound to the run's `cwd` (worktree), gives OpenCode the same multi-turn shape
  * as the Claude runner: each `sendMessage` posts another prompt to the same
- * session (history is kept server-side) and `session/abort` cancels. "Continue"
- * starts a fresh server and a fresh session — `bootstrap()` always `POST
- * /session` and does not read `spec.sessionId`; resuming a server-side session
+ * session (history is kept server-side) and the detected interrupt route cancels. "Continue"
+ * starts a fresh server and a fresh session — `bootstrap()` always creates a
+ * session and does not read `spec.sessionId`; resuming a server-side session
  * id is not implemented.
  *
- * Auth = the host's opencode config/logins. The agent runs autonomously
+ * Auth is a per-session password minted by cezar. The agent runs autonomously
  * (auto-approved permissions); OpenCode has no per-tool allowlist, so
  * `spec.allowedTools` is ignored. `spec.model` is `provider/model`.
  */
@@ -113,6 +119,8 @@ class OpencodeSession implements AgentSession {
   private resolveExit!: () => void;
   private exited!: Promise<void>;
   private readonly sse = new AbortController();
+  private readonly authorization: string;
+  private dialect: OpencodeDialect = opencodeDialect('v1');
   private readonly toolCalls: AgentToolCallRecord[] = [];
   private readonly textChunks: string[] = [];
   /** Per text-part cursor so only newly-appended text is buffered (deltas). */
@@ -135,6 +143,7 @@ class OpencodeSession implements AgentSession {
   /** Has this turn's prompt POST settled (either way)? Until it has, nothing
    *  synthesizes a turn end — only the wire does. */
   private turnPostSettled = false;
+  private turnEventSeen = false;
   /** Resolves the in-flight turn's `prompt()` — called from `finishTurn()`. */
   private endTurn: (() => void) | undefined;
   private turnGraceTimer: NodeJS.Timeout | undefined;
@@ -166,10 +175,12 @@ class OpencodeSession implements AgentSession {
     private readonly onEvent: ((event: AgentEvent) => void) | undefined,
     private readonly opts: SessionOptions,
   ) {
+    const password = randomBytes(18).toString('base64url');
+    this.authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
     // Random high port; the actual bound URL is read back from stdout.
     const port = 40000 + Math.floor(Math.random() * 20000);
     try {
-      const env = buildChildEnv({ backend: 'opencode', extraEnv: spec.env });
+      const env = buildChildEnv({ backend: 'opencode', extraEnv: { ...spec.env, OPENCODE_SERVER_PASSWORD: password } });
       const [file, argv] = disclaimedCommand(bin, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], env);
       this.child = nodeSpawn(file, argv, { cwd: spec.cwd, env });
     } catch (err) {
@@ -214,6 +225,7 @@ class OpencodeSession implements AgentSession {
 
     this.ready = (async () => {
       this.baseUrl = await urlReady;
+      this.dialect = await detectOpencodeDialect(this.baseUrl, this.authorization);
       await this.bootstrap();
     })();
 
@@ -294,7 +306,7 @@ class OpencodeSession implements AgentSession {
   interrupt(): void {
     this.serverOpen = false;
     if (this.baseUrl && this.sessionId) {
-      void this.http('POST', `/session/${this.sessionId}/abort`, undefined).catch(() => undefined);
+      void this.http('POST', this.dialect.abortPath(this.sessionId), undefined).catch(() => undefined);
     }
     this.finishTurn();
     this.sse.abort();
@@ -369,7 +381,10 @@ class OpencodeSession implements AgentSession {
   }
 
   private async bootstrap(): Promise<void> {
-    const created = await this.http('POST', '/session', { title: 'cezar task' });
+    const path = this.dialect.version === 'v2'
+      ? `${this.dialect.sessionPath()}?directory=${encodeURIComponent(this.spec.cwd)}`
+      : this.dialect.sessionPath();
+    const created = await this.http('POST', path, this.dialect.version === 'v1' ? { title: 'cezar task' } : {});
     this.sessionId = stringField(created, 'id');
     if (!this.sessionId) throw new Error('opencode did not return a session id');
     this.emit({ type: 'session', sessionId: this.sessionId });
@@ -389,7 +404,8 @@ class OpencodeSession implements AgentSession {
    * Post one prompt and resolve when the TURN ends — not when the HTTP
    * response does.
    *
-   * Opencode holds `POST /session/:id/message` open for the whole turn, so the
+  * OpenCode v1 holds `POST /session/:id/message` open for the whole turn, while
+  * v2 acknowledges `POST /api/session/:id/prompt` as soon as it queues work, so the
    * response is neither a reliable nor a timely boundary: it lands before the
    * final text part (the bundled mock exists to pin that ordering), and when
    * the transport drops it mid-turn the turn has not ended at all. Reading it
@@ -411,21 +427,22 @@ class OpencodeSession implements AgentSession {
     }
     this.turnInFlight = true;
     this.turnPostSettled = false;
+    this.turnEventSeen = false;
     this.turnDropped = undefined;
     const turnEnded = new Promise<void>((resolve) => {
       this.endTurn = resolve;
     });
     // v2 turn boundary — the prompt POST is the turn start (§7.1).
     this.emitUi(opencodeTurnStarted);
-    const body: Record<string, unknown> = { parts: [{ type: 'text', text }] };
+    const body = this.dialect.promptBody(text);
     // `spec.model` arrives already normalised to canonical `provider/model`
     // (the run wiring's fail-loud gate). Split it with the shared parser — the
     // one every runner uses — into opencode's `{ providerID, modelID }`.
     const id = parseModelIdentity(this.spec.model);
-    if (id) body.model = { providerID: id.provider, modelID: id.model };
+    if (id && this.dialect.version === 'v1') body.model = { providerID: id.provider, modelID: id.model };
     let failure: unknown;
     try {
-      const res = await this.http('POST', `/session/${this.sessionId}/message`, body);
+      const res = await this.http('POST', this.dialect.promptPath(this.sessionId), body);
       this.absorbUsage(res);
     } catch (err) {
       // A transport drop on a session the event bus still shows alive is no
@@ -490,7 +507,7 @@ class OpencodeSession implements AgentSession {
    * for, so the HTTP response stays the boundary, exactly as it was.
    */
   private armTurnGrace(): void {
-    if (!this.turnInFlight || !this.turnPostSettled) return;
+    if (!this.turnInFlight) return;
     if (this.turnGraceTimer) {
       clearTimeout(this.turnGraceTimer);
       this.turnGraceTimer = undefined;
@@ -499,6 +516,7 @@ class OpencodeSession implements AgentSession {
       this.finishTurn();
       return;
     }
+    if (this.dialect.postSettlesTurn ? !this.turnPostSettled : !this.turnEventSeen) return;
     this.turnGraceTimer = setTimeout(() => this.finishTurn(), TURN_IDLE_GRACE_MS);
     this.turnGraceTimer.unref?.();
   }
@@ -518,7 +536,8 @@ class OpencodeSession implements AgentSession {
    *  event emitted after this resolves can be missed. */
   private async consumeEvents(): Promise<void> {
     if (!this.baseUrl) return;
-    this.sseConnected = await openOpencodeEventStream(`${this.baseUrl}/event`, {
+    this.sseConnected = await openOpencodeEventStream(`${this.baseUrl}${this.dialect.eventPath()}`, {
+      authorization: this.authorization,
       signal: this.sse.signal,
       onFrame: (frame) => this.handleFrame(frame),
       // The bus is the turn's evidence of life; once it is gone a turn waiting
@@ -538,7 +557,7 @@ class OpencodeSession implements AgentSession {
     if (dataLines.length === 0) return;
     let evt: OpencodeEvent;
     try {
-      evt = JSON.parse(dataLines.join('\n')) as OpencodeEvent;
+      evt = this.dialect.normalizeFrame(JSON.parse(dataLines.join('\n')));
     } catch {
       return;
     }
@@ -550,6 +569,7 @@ class OpencodeSession implements AgentSession {
     const type = evt.type ?? '';
     const props = evt.properties ?? {};
     if (type === 'message.updated' || type === 'message.created' || type === 'message.completed') {
+      this.turnEventSeen = true;
       const info = (props.info as Record<string, unknown>) ?? props;
       const mid = stringField(info, 'id');
       const role = stringField(info, 'role');
@@ -557,6 +577,7 @@ class OpencodeSession implements AgentSession {
       this.absorbUsage(info);
       this.armTurnGrace();
     } else if (type === 'message.part.updated' || type === 'message.part.created') {
+      this.turnEventSeen = true;
       this.handlePart((props.part as Record<string, unknown>) ?? props);
       this.armTurnGrace();
     } else if (type === 'session.idle') {
@@ -647,13 +668,17 @@ class OpencodeSession implements AgentSession {
     body: unknown,
   ): Promise<Record<string, unknown>> {
     if (!this.baseUrl) throw new Error('opencode server not ready');
-    const res = await opencodeRequest(`${this.baseUrl}${path}`, { method, body });
+    const res = await opencodeRequest(`${this.baseUrl}${path}`, {
+      method,
+      body,
+      authorization: this.authorization,
+    });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`${method} ${path} → ${res.status} ${res.body.slice(0, 200)}`);
+      throw new Error(`${method} ${path} → ${res.status}`);
     }
     if (!res.body) return {};
     try {
-      return JSON.parse(res.body) as Record<string, unknown>;
+      return this.dialect.unwrap(JSON.parse(res.body) as Record<string, unknown>);
     } catch {
       return {};
     }

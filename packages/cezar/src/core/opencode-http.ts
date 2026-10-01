@@ -34,6 +34,7 @@ const AGENT = new Agent({ keepAlive: false });
 export interface OpencodeResponse {
   readonly status: number;
   readonly body: string;
+  readonly headers: IncomingMessage['headers'];
 }
 
 export interface OpencodeRequestOptions {
@@ -41,6 +42,7 @@ export interface OpencodeRequestOptions {
   /** JSON body; the request is sent without one (and without a content-type)
    *  when this is `undefined`. */
   readonly body?: unknown;
+  readonly authorization?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -73,6 +75,7 @@ export function opencodeRequest(url: string, opts: OpencodeRequestOptions): Prom
   return new Promise<OpencodeResponse>((resolve, reject) => {
     const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body);
     const headers: Record<string, string> = {};
+    if (opts.authorization) headers.authorization = opts.authorization;
     if (payload !== undefined) {
       headers['content-type'] = 'application/json';
       headers['content-length'] = String(Buffer.byteLength(payload));
@@ -90,7 +93,7 @@ export function opencodeRequest(url: string, opts: OpencodeRequestOptions): Prom
         text += chunk;
       });
       res.once('error', (err: Error) => reject(new OpencodeTransportError(err)));
-      res.once('end', () => resolve({ status: res.statusCode ?? 0, body: text }));
+      res.once('end', () => resolve({ status: res.statusCode ?? 0, body: text, headers: res.headers }));
     });
     if (payload !== undefined) req.write(payload);
     req.end();
@@ -98,6 +101,7 @@ export function opencodeRequest(url: string, opts: OpencodeRequestOptions): Prom
 }
 
 export interface OpencodeEventStreamOptions {
+  readonly authorization?: string;
   readonly signal?: AbortSignal;
   /** One `\n\n`-delimited SSE frame, without its terminating blank line. */
   readonly onFrame: (frame: string) => void;
@@ -127,7 +131,10 @@ export function openOpencodeEventStream(
     };
     const req = open(url, {
       method: 'GET',
-      headers: { accept: 'text/event-stream' },
+      headers: {
+        accept: 'text/event-stream',
+        ...(opts.authorization ? { authorization: opts.authorization } : {}),
+      },
       agent: AGENT,
       signal: opts.signal,
     });

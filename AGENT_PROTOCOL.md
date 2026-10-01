@@ -309,8 +309,8 @@ transport into `UiEvent`s. The authoritative table is
 
 | v2 event / field | claude (stream-json) | codex (app-server JSON-RPC) | opencode (serve HTTP+SSE) | cursor (stream-json print mode) |
 |---|---|---|---|---|
-| `session.started` | `system/init` (model, tools, cwd) | `thread/started` / `thread/start` result | `POST /session` response | `system/init` (model, cwd) |
-| `turn.started` | each stdin user message | `turn/started` | each prompt POST | no stdin turn boundary in print mode — starts `turn_1` with the session |
+| `session.started` | `system/init` (model, tools, cwd) | `thread/started` / `thread/start` result | v1 `POST /session` or v2 `POST /api/session` response | `system/init` (model, cwd) |
+| `turn.started` | each stdin user message | `turn/started` | each prompt POST (`/session/:id/message` v1, `/api/session/:id/prompt` v2) | no stdin turn boundary in print mode — starts `turn_1` with the session |
 | `turn.completed` + `stopReason` | `result` subtype (`success→end_turn`, `error_max_turns→max_tokens`, `error_during_execution→error`) | `turn/completed→end_turn`, `turn/failed→error`, interrupt→`cancelled` | `session.idle→end_turn` (or `error` if a `session.error` preceded) | `result` (`is_error→error`, `subtype=error_max_turns→max_tokens`, else `end_turn`) |
 | message item | `assistant` `text` blocks (deltas via `--include-partial-messages`) | `agentMessage` items | text parts | `assistant` `text` content blocks |
 | reasoning item | `thinking` blocks | `reasoning` items (+ `textDelta`) | `reasoning` parts | *(none — docs: `thinking` events are suppressed in print mode)* |

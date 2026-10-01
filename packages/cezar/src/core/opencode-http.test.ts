@@ -65,7 +65,7 @@ describe('opencode-http', () => {
 
     expect(seen).toBe('{"title":"cezar task"}');
     expect(seenType).toBe('application/json');
-    expect(res).toEqual({ status: 200, body: '{"id":"ses_1"}' });
+    expect(res).toMatchObject({ status: 200, body: '{"id":"ses_1"}' });
   });
 
   it('sends no body and no content-type when there is nothing to send', async () => {
@@ -79,7 +79,7 @@ describe('opencode-http', () => {
     const res = await opencodeRequest(`${base}/session/x/abort`, { method: 'POST' });
 
     expect(seenType).toBeUndefined();
-    expect(res).toEqual({ status: 204, body: '' });
+    expect(res).toMatchObject({ status: 204, body: '' });
   });
 
   it('a non-2xx status is an ANSWER — returned, never thrown', async () => {
@@ -110,7 +110,7 @@ describe('opencode-http', () => {
     const started = Date.now();
     const res = await opencodeRequest(`${base}/session/x/message`, { method: 'POST', body: {} });
 
-    expect(res).toEqual({ status: 200, body: '{"ok":true}' });
+    expect(res).toMatchObject({ status: 200, body: '{"ok":true}' });
     expect(Date.now() - started).toBeGreaterThanOrEqual(500);
   }, 15_000);
 

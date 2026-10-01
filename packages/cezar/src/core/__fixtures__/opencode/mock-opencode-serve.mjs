@@ -225,6 +225,11 @@ const server = createServer((req, res) => {
       }
       return;
     }
+    if (req.method === 'GET' && url === '/api/session') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html><html><body>mock app</body></html>');
+      return;
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{}');
   });
