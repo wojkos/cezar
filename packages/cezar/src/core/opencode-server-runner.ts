@@ -384,16 +384,12 @@ class OpencodeSession implements AgentSession {
   }
 
   private async bootstrap(): Promise<void> {
-    const path = this.dialect.version === 'v2'
-      ? `${this.dialect.sessionPath()}?directory=${encodeURIComponent(this.spec.cwd)}`
-      : this.dialect.sessionPath();
     const model = parseModelIdentity(this.spec.model);
-    const body = this.dialect.version === 'v1'
-      ? { title: 'cezar task' }
-      : model
-        ? { model: { id: model.model, providerID: model.provider } }
-        : {};
-    const created = await this.http('POST', path, body);
+    const created = await this.http(
+      'POST',
+      this.dialect.sessionPath(this.spec.cwd),
+      this.dialect.sessionBody(model),
+    );
     this.sessionId = stringField(created, 'id');
     if (!this.sessionId) throw new Error('opencode did not return a session id');
     this.emit({ type: 'session', sessionId: this.sessionId });
@@ -443,12 +439,8 @@ class OpencodeSession implements AgentSession {
     });
     // v2 turn boundary — the prompt POST is the turn start (§7.1).
     this.emitUi(opencodeTurnStarted);
-    const body = this.dialect.promptBody(text);
-    // `spec.model` arrives already normalised to canonical `provider/model`
-    // (the run wiring's fail-loud gate). Split it with the shared parser — the
-    // one every runner uses — into opencode's `{ providerID, modelID }`.
     const id = parseModelIdentity(this.spec.model);
-    if (id && this.dialect.version === 'v1') body.model = { providerID: id.provider, modelID: id.model };
+    const body = this.dialect.promptBody(text, id);
     let failure: unknown;
     try {
       const res = await this.http('POST', this.dialect.promptPath(this.sessionId), body);
@@ -545,7 +537,7 @@ class OpencodeSession implements AgentSession {
    *  event emitted after this resolves can be missed. */
   private async consumeEvents(): Promise<void> {
     if (!this.baseUrl) return;
-    this.sseConnected = await openOpencodeEventStream(`${this.baseUrl}${this.dialect.eventPath()}`, {
+    this.sseConnected = await openOpencodeEventStream(`${this.baseUrl}${this.dialect.eventPath}`, {
       authorization: this.authorizationHeader(),
       signal: this.sse.signal,
       onFrame: (frame) => this.handleFrame(frame),

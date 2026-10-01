@@ -1,16 +1,18 @@
 import { opencodeRequest } from './opencode-http.ts';
 import type { OpencodeResponse } from './opencode-http.ts';
+import type { ModelIdentity } from './model-identity.ts';
 
 export type OpencodeDialectVersion = 'v1' | 'v2';
 
 export interface OpencodeDialect {
   readonly version: OpencodeDialectVersion;
   readonly postSettlesTurn: boolean;
-  sessionPath(): string;
+  sessionPath(cwd: string): string;
   promptPath(id: string): string;
   abortPath(id: string): string;
-  eventPath(): string;
-  promptBody(text: string): Record<string, unknown>;
+  readonly eventPath: string;
+  sessionBody(model: ModelIdentity | null): Record<string, unknown>;
+  promptBody(text: string, model: ModelIdentity | null): Record<string, unknown>;
   unwrap(body: Record<string, unknown>): Record<string, unknown>;
   normalizeFrame(event: unknown): { type?: string; properties?: Record<string, unknown> };
 }
@@ -21,8 +23,12 @@ const v1: OpencodeDialect = {
   sessionPath: () => '/session',
   promptPath: (id) => `/session/${encodeURIComponent(id)}/message`,
   abortPath: (id) => `/session/${encodeURIComponent(id)}/abort`,
-  eventPath: () => '/event',
-  promptBody: (text) => ({ parts: [{ type: 'text', text }] }),
+  eventPath: '/event',
+  sessionBody: () => ({ title: 'cezar task' }),
+  promptBody: (text, model) => ({
+    parts: [{ type: 'text', text }],
+    ...(model ? { model: { providerID: model.provider, modelID: model.model } } : {}),
+  }),
   unwrap: (body) => body,
   normalizeFrame: (event) => (isRecord(event) ? event : {}),
 };
@@ -30,10 +36,11 @@ const v1: OpencodeDialect = {
 const v2: OpencodeDialect = {
   version: 'v2',
   postSettlesTurn: false,
-  sessionPath: () => '/api/session',
+  sessionPath: (cwd) => `/api/session?directory=${encodeURIComponent(cwd)}`,
   promptPath: (id) => `/api/session/${encodeURIComponent(id)}/prompt`,
   abortPath: (id) => `/api/session/${encodeURIComponent(id)}/interrupt`,
-  eventPath: () => '/api/event',
+  eventPath: '/api/event',
+  sessionBody: (model) => (model ? { model: { id: model.model, providerID: model.provider } } : {}),
   promptBody: (text) => ({ text }),
   unwrap: (body) => (isRecord(body.data) ? body.data : {}),
   normalizeFrame: (event) => {
