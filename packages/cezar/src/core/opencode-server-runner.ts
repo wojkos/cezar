@@ -387,7 +387,13 @@ class OpencodeSession implements AgentSession {
     const path = this.dialect.version === 'v2'
       ? `${this.dialect.sessionPath()}?directory=${encodeURIComponent(this.spec.cwd)}`
       : this.dialect.sessionPath();
-    const created = await this.http('POST', path, this.dialect.version === 'v1' ? { title: 'cezar task' } : {});
+    const model = parseModelIdentity(this.spec.model);
+    const body = this.dialect.version === 'v1'
+      ? { title: 'cezar task' }
+      : model
+        ? { model: { id: model.model, providerID: model.provider } }
+        : {};
+    const created = await this.http('POST', path, body);
     this.sessionId = stringField(created, 'id');
     if (!this.sessionId) throw new Error('opencode did not return a session id');
     this.emit({ type: 'session', sessionId: this.sessionId });

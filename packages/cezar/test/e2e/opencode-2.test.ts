@@ -12,6 +12,7 @@ const execFile = promisify(execFileCallback);
 const enabled = process.env.CEZ_OPENCODE_V2_TEST === '1';
 const binary = process.env.CEZ_OPENCODE_BIN ?? (process.platform === 'win32' ? 'opencode.exe' : 'opencode');
 const timeoutMs = Number(process.env.CEZ_OPENCODE_TEST_TIMEOUT_MS ?? 120_000);
+const testModel = process.env.CEZ_OPENCODE_TEST_MODEL;
 
 type JsonObject = Record<string, unknown>;
 
@@ -254,6 +255,8 @@ test(
     assert.match(version, /(?:^|\D)2\./, `expected OpenCode 2.x, got: ${version}`);
 
     const root = await mkdtemp(join(tmpdir(), 'cezar-opencode-v2-'));
+    assert.match(testModel ?? '', /^[^/]+\/[^/]+$/, 'set CEZ_OPENCODE_TEST_MODEL=provider/model, for example github-copilot/gpt-5-mini');
+    const [provider, modelId] = testModel!.split('/', 2);
     const password = `cez-${Buffer.from(`${Date.now()}-${Math.random()}`).toString('base64url')}`;
     const port = 40000 + Math.floor(Math.random() * 20000);
     const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
@@ -275,7 +278,7 @@ test(
         `${baseUrl}/api/session?directory=${encodeURIComponent(root)}`,
         password,
         'POST',
-        {},
+        { model: { id: modelId, providerID: provider } },
       );
       assert.ok(created.status >= 200 && created.status < 300, `POST /api/session failed: HTTP ${created.status} ${created.body}`);
       const session = dataEnvelope(created, 'POST /api/session');
